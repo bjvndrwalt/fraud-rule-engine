@@ -24,11 +24,11 @@ public class TransactionPersistenceService {
 
     private final TransactionRepository transactionRepository;
     private final FraudFlagRepository fraudFlagRepository;
-    private final FraudClassifierService fraudClassifierService;
+    private final FraudClassifier fraudClassifierService;
 
     public TransactionPersistenceService(TransactionRepository transactionRepository,
                                          FraudFlagRepository fraudFlagRepository,
-                                         FraudClassifierService fraudClassifierService) {
+                                         FraudClassifier fraudClassifierService) {
         this.transactionRepository = transactionRepository;
         this.fraudFlagRepository = fraudFlagRepository;
         this.fraudClassifierService = fraudClassifierService;
