@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
-public class FraudClassifierService {
+public class FraudClassifierService implements FraudClassifier {
 
     private final List<FraudRule> rules;
 

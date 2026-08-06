@@ -1,18 +1,21 @@
 package com.example.frauddetection.service;
 
+import java.time.Instant;
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.example.frauddetection.entity.FraudFlag;
 import com.example.frauddetection.entity.Transaction;
 import com.example.frauddetection.model.TransactionCreatedEvent;
 import com.example.frauddetection.repository.FraudFlagRepository;
 import com.example.frauddetection.repository.TransactionRepository;
 import com.example.frauddetection.rules.FraudFlagResult;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
-import java.util.List;
+//A Kafka message arrives → check it's not a duplicate → convert it to a DB record → save it → run all fraud rules against it → if any rules fired, mark it as flagged, save a fraud_flag row for each rule that matched, and log it.
 
 @Service
 public class TransactionPersistenceService {
@@ -21,18 +24,19 @@ public class TransactionPersistenceService {
 
     private final TransactionRepository transactionRepository;
     private final FraudFlagRepository fraudFlagRepository;
-    private final FraudClassifierService fraudClassifierService;
+    private final FraudClassifier fraudClassifierService;
 
     public TransactionPersistenceService(TransactionRepository transactionRepository,
                                          FraudFlagRepository fraudFlagRepository,
-                                         FraudClassifierService fraudClassifierService) {
+                                         FraudClassifier fraudClassifierService) {
         this.transactionRepository = transactionRepository;
         this.fraudFlagRepository = fraudFlagRepository;
         this.fraudClassifierService = fraudClassifierService;
     }
 
     @Transactional
-    public void processAndPersist(TransactionCreatedEvent event) {
+    //Indempotency guard - if found by id -> return
+    public void processAndPersist(TransactionCreatedEvent event) { 
         if (transactionRepository.existsById(event.getTransactionId())) {
             log.info("Duplicate event skipped: {}", event.getTransactionId());
             return;

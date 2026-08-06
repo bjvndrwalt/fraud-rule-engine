@@ -1,9 +1,9 @@
 package com.example.frauddetection.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "fraud.rules")
 public class FraudRulesConfig {
@@ -29,6 +29,7 @@ public class FraudRulesConfig {
     public HighFrequencyConfig getHighFrequency() { return highFrequency; }
     public void setHighFrequency(HighFrequencyConfig highFrequency) { this.highFrequency = highFrequency; }
 
+    // Rules are initialised with default values here so the service still works even if application.properties is missing those keys entirely.
     public static class HighAmountConfig {
         private boolean enabled = true;
         private double threshold = 10000.0;
@@ -57,7 +58,7 @@ public class FraudRulesConfig {
 
     public static class HighRiskMerchantConfig {
         private boolean enabled = true;
-        // ArrayList (not List.of) so Spring's property binder can populate it
+        // ArrayList (not List.of) so Spring's property binder can populate it. List.of is immutable and will break
         private List<String> categories = new ArrayList<>(List.of("GAMBLING", "CRYPTO", "FOREX"));
 
         public boolean isEnabled() { return enabled; }
