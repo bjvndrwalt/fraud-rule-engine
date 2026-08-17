@@ -4,3 +4,4 @@ target/
 *.war
 .DS_Store
 .claude-flow/
+docs/
