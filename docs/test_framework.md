@@ -4,7 +4,7 @@
 
 The fraud detection service uses **JUnit 5** with **Mockito** and **AssertJ** for unit and web-layer tests. All tests live under `src/test/` and run with `mvn test`. There are no integration tests that require a running Kafka broker or real database — every external dependency is either mocked or handled by the Spring test slice.
 
-**70 tests across 8 test classes — all passing.**
+**80 tests across 10 test classes — all passing (75 in `fraud-detection-service`, 5 in `transaction-producer-service`).**
 
 ---
 
@@ -27,23 +27,26 @@ All dependencies are pulled in by the single `spring-boot-starter-test` entry in
 ### 1. Pure Unit Tests (Rule classes, `FraudClassifierService`)
 No Spring context. Tests construct classes directly with `new`, set config values on plain `FraudRulesConfig` objects, and call `evaluate()`. Fast — typically under 10ms per class. No `@SpringBootTest`, no database, no Kafka.
 
-### 2. Mockito Unit Tests (`TransactionPersistenceService`)
-Uses `@ExtendWith(MockitoExtension.class)`. Mockito creates mock objects for the three dependencies (`TransactionRepository`, `FraudFlagRepository`, `FraudClassifier`). Tests stub what the mocks return with `when(...).thenReturn(...)` and verify what was called with `verify(...)`. No Spring context needed.
+### 2. Mockito Unit Tests (`TransactionPersistenceService`, `TransactionConsumer`, `TransactionProducerRunner`)
+Uses `@ExtendWith(MockitoExtension.class)`. Mockito creates mock objects for dependencies, stubs return values with `when(...).thenReturn(...)`, and verifies call behaviour with `verify(...)`. No Spring context needed.
+
+For classes that interact with Kafka (`TransactionConsumer`, `TransactionProducerRunner`), `KafkaTemplate` and `Acknowledgment` are mocked the same way — tests never need a real broker. The producer's infinite `run()` loop is exercised by running it in a daemon thread, sleeping 50 ms (enough for one full iteration), then interrupting. Spring's `Acknowledgment` is an interface so JDK proxy mocking applies; `KafkaTemplate` and `TransactionPersistenceService` are concrete classes and use the subclass mock maker (see Java 26 section below).
 
 ### 3. Web Layer Slice Test (`TransactionController`)
 Uses `@WebMvcTest(TransactionController.class)`. Spring loads **only** the web layer (the controller + Spring MVC wiring). Nothing else — no JPA, no Kafka, no service beans. The two repository dependencies are replaced with `@MockBean` instances. Tests send HTTP requests via `MockMvc` and assert on status codes and JSON paths.
 
 ---
 
-## Java 26 + Mockito — Why a `FraudClassifier` Interface Exists
+## Java 26 + Mockito — Concrete-Class Mocking
 
 Mockito can mock objects in two ways:
 - **Interface mocking** — uses JDK's built-in `Proxy` mechanism. No bytecode changes needed. Works on any JVM.
-- **Concrete class mocking** — uses a bytecode instrumentation agent to subclass the target at runtime. Requires dynamic agent loading.
+- **Concrete class mocking** — needs bytecode instrumentation to subclass the target at runtime, which requires dynamic agent loading.
 
-Java 21 introduced restrictions on dynamic agent loading; Java 26 enforces them strictly. `FraudClassifierService` is a concrete class, so Mockito could not mock it directly on this JVM.
+Java 21 introduced restrictions on dynamic agent loading; Java 26 enforces them strictly. Two approaches are used in this project:
 
-The fix was to extract a `FraudClassifier` interface:
+### Approach A — Extract an interface (preferred for design reasons)
+`FraudClassifierService` is a concrete class, so a `FraudClassifier` interface was extracted:
 
 ```java
 // service/FraudClassifier.java
@@ -52,7 +55,21 @@ public interface FraudClassifier {
 }
 ```
 
-`FraudClassifierService` implements it, and `TransactionPersistenceService` depends on the interface. In tests, Mockito mocks the interface via JDK proxy — no agent needed. This is also better design: depend on abstractions, not concrete classes.
+`FraudClassifierService` implements it, and `TransactionPersistenceService` depends on the interface. Mockito mocks the interface via JDK proxy — no agent needed. This is also better design: depend on abstractions, not concrete classes.
+
+### Approach B — Switch to the subclass mock maker
+For cases where introducing an interface would be over-engineering (e.g. mocking `TransactionPersistenceService` in `TransactionConsumerTest`, or `KafkaTemplate` in `TransactionProducerRunnerTest`), Mockito's **subclass mock maker** is used instead of the default inline maker.
+
+The subclass maker creates a CGLIB subclass at test time — no JVM agent attachment required. It is activated per-module via a single file:
+
+```
+src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker
+```
+```
+mock-maker-subclass
+```
+
+This file exists in both `fraud-detection-service` and `transaction-producer-service`. The only limitation of this approach is that `final` classes and `final` methods cannot be mocked — none of the classes under test are final here.
 
 ---
 
@@ -66,7 +83,9 @@ spring.datasource.url=jdbc:sqlite:file::memory:?cache=shared  # in-memory DB for
 spring.jpa.hibernate.ddl-auto=create-drop       # fresh schema per test run
 ```
 
-`pom.xml` Surefire plugin adds `-XX:+EnableDynamicAgentLoading -Xshare:off` JVM args. This is a belt-and-suspenders precaution for Mockito on Java 21+ — the interface extraction above is the real fix, but the flags suppress noisy JVM warnings.
+`fraud-detection-service/pom.xml` Surefire plugin adds `-XX:+EnableDynamicAgentLoading -Xshare:off` JVM args. These suppress JVM warnings on Java 21+ about Mockito self-attaching.
+
+Both modules include `src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker` containing `mock-maker-subclass`. This switches Mockito to a CGLIB-based subclass mock maker that works without the JVM attach mechanism — required for concrete-class mocking on Java 26.
 
 ---
 
@@ -265,25 +284,77 @@ Tests all four REST endpoints using `@WebMvcTest`. Spring loads only the web lay
 
 ---
 
+### `TransactionConsumerTest`
+**File:** `consumer/TransactionConsumerTest.java` | **Tests:** 5 | **Module:** `fraud-detection-service`
+
+Tests the `@KafkaListener` method `listen(TransactionCreatedEvent, Acknowledgment)` in isolation. `TransactionPersistenceService` and Spring's `Acknowledgment` are both mocked — no Kafka broker or Spring context is started.
+
+**Key contract being tested:** Kafka's at-least-once delivery guarantee requires that the consumer only acknowledges (`ack.acknowledge()`) an offset **after** successful processing. If processing throws, the offset must not advance so the broker retries the record (or the `DefaultErrorHandler` routes it to the DLT after backoff).
+
+| Test | What it checks |
+|---|---|
+| `listen_delegatesToPersistenceService_andAcknowledges` | Happy path — `processAndPersist` is called and `ack.acknowledge()` fires exactly once |
+| `listen_acknowledgesAfterSuccessfulProcessing` | `inOrder` verifies persist happens **before** ack — never the other way around |
+| `listen_nullEvent_acknowledgesImmediately_withoutCallingPersistenceService` | Null guard — deserialisation failures from `ErrorHandlingDeserializer` can produce null; method short-circuits safely |
+| `listen_whenPersistenceServiceThrows_rethrowsException` | The exception propagates up to Spring's `DefaultErrorHandler` for retry/DLT routing |
+| `listen_whenPersistenceServiceThrows_doesNotAcknowledge` | Offset does **not** advance on failure — record will be retried |
+
+---
+
+## `transaction-producer-service` Tests
+
+The producer service has its own test module. Add `spring-boot-starter-test` is declared as a `test`-scoped dependency and uses the same `mockito-extensions/org.mockito.plugins.MockMaker` = `mock-maker-subclass` approach for mocking `KafkaTemplate`.
+
+---
+
+### `TransactionProducerRunnerTest`
+**File:** `producer/TransactionProducerRunnerTest.java` | **Tests:** 5 | **Module:** `transaction-producer-service`
+
+Tests `TransactionProducerRunner`, which implements `CommandLineRunner` and loops indefinitely sending random `TransactionCreatedEvent` messages to Kafka. `KafkaTemplate<String, Object>` is mocked — no broker needed.
+
+**Testing an infinite loop:** `run()` never returns on its own. Each test that needs to observe sends starts the runner in a daemon thread, sleeps 50 ms (the first iteration fires immediately; `Thread.sleep(1000)` comes at the end of the loop body), then calls `thread.interrupt()`. The interrupted-exception handler sets the interrupt flag and the `while (!Thread.currentThread().isInterrupted())` guard exits cleanly. `thread.join(2_000)` confirms the thread actually stopped.
+
+**`CompletableFuture` stub:** `kafkaTemplate.send(...)` returns a `CompletableFuture.completedFuture(null)`. The `whenComplete` callback in `sendTransaction()` only checks `ex != null`, so a `null` result value is safe and avoids needing to mock the `SendResult` type.
+
+| Test | What it checks |
+|---|---|
+| `run_sendsToTheConfiguredTopic` | `send()` is always called with the topic name injected via `@Value` |
+| `run_usesAccountIdAsMessageKey` | The Kafka message key is always one of the 10 known account IDs (correct partitioning) |
+| `run_producedEvent_hasAllMandatoryFieldsPopulated` | Every field of the built `TransactionCreatedEvent` is non-null; `channel` is one of `POS / ONLINE / ATM` |
+| `run_transactionIds_areMonotonicallyIncreasing` | IDs are unique across sends — the `AtomicInteger` counter is working correctly |
+| `run_doesNotPropagateRuntimeException_whenKafkaSendFails` | A broker-unavailable `RuntimeException` is caught inside `sendTransaction()`; the thread exits cleanly via interrupt rather than crashing |
+
+---
+
 ## Running the Tests
 
 ```bash
-# Run all tests
+# fraud-detection-service — all 75 tests
 cd fraud-detection-service
 mvn test
 
+# transaction-producer-service — all 5 tests
+cd transaction-producer-service
+mvn test
+
 # Run a single test class
-mvn test -Dtest=HighAmountRuleTest
+mvn test -Dtest=TransactionConsumerTest
 
 # Run a single test method
 mvn test -Dtest=HighAmountRuleTest#fires_whenAmountExceedsThreshold
 
-# Run and skip tests (for building only)
+# Build without running tests
 mvn package -DskipTests
 ```
 
 Expected output on a clean run:
+
 ```
-Tests run: 70, Failures: 0, Errors: 0, Skipped: 0
+# fraud-detection-service
+Tests run: 75, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+
+# transaction-producer-service
+Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```

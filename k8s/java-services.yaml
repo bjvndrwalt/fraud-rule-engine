@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: java-transaction-producer
-          image: replace-with-your-transaction-producer-image
+          image: fraud-rule-engine/transaction-producer:latest
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka-service:9092"
@@ -27,6 +27,17 @@ spec:
             limits:
               cpu: "250m"
               memory: "256Mi"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fraud-db-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -44,7 +55,7 @@ spec:
     spec:
       containers:
         - name: java-fraud-detection
-          image: replace-with-your-fraud-detection-image
+          image: fraud-rule-engine/fraud-detection:latest
           ports:
             - containerPort: 8080
           env:
@@ -52,6 +63,11 @@ spec:
               value: "kafka-service:9092"
             - name: TRANSACTION_TOPIC
               value: "transaction.created"
+            - name: DB_PATH
+              value: "/data/fraud_engine.db"
+          volumeMounts:
+            - name: fraud-db
+              mountPath: /data
           resources:
             requests:
               cpu: "200m"
@@ -59,6 +75,10 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+      volumes:
+        - name: fraud-db
+          persistentVolumeClaim:
+            claimName: fraud-db-pvc
 ---
 apiVersion: v1
 kind: Service
