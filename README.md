@@ -22,7 +22,7 @@ A real-time fraud detection system built with Spring Boot and Apache Kafka. Tran
                    DLT:         transaction.created.DLT
 ```
 
-Both services connect to a single Kafka broker. Failed messages (after 3 retries) are automatically routed to the Dead Letter Topic and logged by a dedicated DLT consumer.
+Both services connect to a 3-broker Kafka cluster (KRaft). `transaction.created` has 3 partitions with replication factor 3 and `min.insync.replicas=2`, and the producer uses `acks=all`, so the system tolerates the loss of one broker without losing data or halting. Messages are keyed by `accountId`, so each account's transactions stay ordered within one partition. Failed messages (after 3 retries) are automatically routed to the Dead Letter Topic and logged by a dedicated DLT consumer.
 
 ---
 
@@ -72,16 +72,16 @@ cd fraud-rule-engine
 docker compose up --build
 ```
 
-This starts four containers:
+This starts six containers:
 
 | Container | Description | Port |
 |-----------|-------------|------|
-| `kafka` | Bitnami Kafka 3.7 (KRaft, no Zookeeper) | internal |
+| `kafka-1`, `kafka-2`, `kafka-3` | Apache Kafka 3.7 — 3-node KRaft cluster (each node is broker + controller, no Zookeeper) | internal |
 | `transaction-producer` | Publishes transactions to Kafka | — |
 | `fraud-detection` | Fraud rules engine + REST API | `8080` |
 | `kafka-ui` | Kafka UI dashboard | `8090` |
 
-Allow ~30 seconds for Kafka to become healthy and for both Spring Boot services to start.
+Allow ~30–60 seconds for all three Kafka brokers to become healthy and for both Spring Boot services to start.
 
 ### Verify it's running
 
@@ -136,11 +136,33 @@ Returns a summary of rule firing counts and percentages.
 
 ## Configuration
 
+### Kafka cluster
+
+Verify the topic is replicated across all brokers:
+
+```bash
+docker compose exec kafka-1 /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka-1:9092 --describe --topic transaction.created
+```
+
+Expected: `PartitionCount: 3`, `ReplicationFactor: 3`, and `Isr` listing all three brokers for each partition.
+
+Test failover by stopping one broker — the producer and consumer should keep working:
+
+```bash
+docker compose stop kafka-2
+docker compose start kafka-2
+```
+
+Stopping two brokers drops below `min.insync.replicas=2`, so writes will be rejected until one returns.
+
+> If you previously ran the single-broker setup, run `docker compose down -v` first to discard the old Kafka data.
+
 ### Environment variables
 
 | Variable | Default | Service |
 |----------|---------|---------|
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:30092` | both |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:30092` (compose sets `kafka-1:9092,kafka-2:9092,kafka-3:9092`) | both |
 | `TRANSACTION_TOPIC` | `transaction.created` | both |
 | `CONSUMER_GROUP_ID` | `fraud-detection-group` | fraud-detection |
 | `DB_PATH` | `./fraud_engine.db` | fraud-detection |
