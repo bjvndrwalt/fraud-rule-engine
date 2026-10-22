@@ -12,7 +12,6 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class TransactionProducerRunner implements CommandLineRunner {
@@ -31,7 +30,6 @@ public class TransactionProducerRunner implements CommandLineRunner {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final String transactionTopic;
     private final Random random = new Random();
-    private final AtomicInteger counter = new AtomicInteger(1);
 
     public TransactionProducerRunner(KafkaTemplate<String, Object> kafkaTemplate,
             @Value("${TRANSACTION_TOPIC:transaction.created}") String transactionTopic) {
@@ -67,7 +65,7 @@ public class TransactionProducerRunner implements CommandLineRunner {
 
     private void sendTransaction(String accountId) {
         TransactionCreatedEvent event = new TransactionCreatedEvent(
-                String.valueOf(counter.getAndIncrement()),
+                UUID.randomUUID().toString(),
                 accountId,
                 randomAmount(),
                 randomMerchantCategory(),

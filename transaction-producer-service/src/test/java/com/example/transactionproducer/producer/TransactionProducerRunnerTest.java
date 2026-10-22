@@ -83,8 +83,8 @@ class TransactionProducerRunnerTest {
     }
 
     @Test
-    void run_transactionIds_areMonotonicallyIncreasing() throws InterruptedException {
-        // Each successive call to sendTransaction() increments the counter — IDs must be unique
+    void run_transactionIds_areUnique() throws InterruptedException {
+        // IDs are random UUIDs, so they stay unique across producer restarts
         ArgumentCaptor<Object> valueCaptor = ArgumentCaptor.forClass(Object.class);
         when(kafkaTemplate.send(anyString(), anyString(), valueCaptor.capture()))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -92,8 +92,8 @@ class TransactionProducerRunnerTest {
         // Run long enough to guarantee multiple sends
         runBriefly(runner);
 
-        List<Integer> ids = valueCaptor.getAllValues().stream()
-                .map(o -> Integer.parseInt(((TransactionCreatedEvent) o).getTransactionId()))
+        List<String> ids = valueCaptor.getAllValues().stream()
+                .map(o -> ((TransactionCreatedEvent) o).getTransactionId())
                 .toList();
 
         assertThat(ids).doesNotHaveDuplicates();
